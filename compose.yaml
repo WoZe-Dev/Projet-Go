@@ -1,0 +1,72 @@
+services:
+  # Base de données PostgreSQL. Le fichier database/init.sql crée les tables
+  # au premier démarrage (quand le volume "database" est vide).
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: leboncoin
+      POSTGRES_PASSWORD: leboncoin
+      POSTGRES_DB: leboncoin
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leboncoin -d leboncoin"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  # Faux serveur d'emails : les emails envoyés sont visibles sur http://localhost:8026
+  # (le port 8025 habituel de Mailpit est déjà pris par WSL sur ce PC)
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8026:8025"
+
+  # Serveur HTTP (net/http)
+  server:
+    build: .
+    user: go
+    working_dir: /home/go
+    command: go run ./cmd/server
+    # Accessible depuis Windows sur http://localhost:8090 (le port 8080 y est déjà pris par WSL)
+    ports:
+      - "8090:8080"
+    volumes:
+      - .:/home/go
+      - go:/go
+    environment:
+      GOCACHE: /go/cache
+      XDG_CONFIG_HOME: /go/config
+      DATABASE_URL: postgres://leboncoin:leboncoin@database:5432/leboncoin?sslmode=disable
+      SMTP_ADDRESS: mailpit:1025
+      MAIL_FROM: noreply@leboncoin.local
+    depends_on:
+      database:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  # Application client (terminal). Lancement : docker compose run --rm client
+  client:
+    build: .
+    user: go
+    working_dir: /home/go
+    command: go run ./cmd/client
+    tty: true
+    stdin_open: true
+    profiles: ["client"]
+    volumes:
+      - .:/home/go
+      - go:/go
+    environment:
+      GOCACHE: /go/cache
+      XDG_CONFIG_HOME: /go/config
+      SERVER_URL: http://server:8080
+    depends_on:
+      - server
+
+volumes:
+  database:
+  # Cache et réglages Go partagés (modules téléchargés, compilation) pour ne pas tout refaire à chaque lancement
+  go:
